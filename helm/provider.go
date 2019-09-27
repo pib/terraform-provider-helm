@@ -24,6 +24,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/helm/cmd/helm/installer"
 	"k8s.io/helm/pkg/helm"
 	helm_env "k8s.io/helm/pkg/helm/environment"
@@ -231,6 +232,34 @@ func kubernetesResource() *schema.Resource {
 				DefaultFunc: schema.EnvDefaultFunc("KUBE_LOAD_CONFIG_FILE", true),
 				Description: "By default the local config (~/.kube/config) is loaded when you use this provider. This option at false disable this behaviour.",
 			},
+			"exec": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"api_version": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+						"command": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+						"env": {
+							Type:     schema.TypeMap,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"args": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+					},
+				},
+				Description: "",
+			},
 		},
 	}
 }
@@ -332,6 +361,20 @@ func (m *Meta) buildK8sClient(d *schema.ResourceData) error {
 	}
 	if v, ok := k8sGetOk(d, "client_key"); ok {
 		cfg.KeyData = []byte(v.(string))
+	}
+	if v, ok := k8sGetOk(d, "exec"); ok {
+		exec := &clientcmdapi.ExecConfig{}
+		if spec, ok := v.([]interface{})[0].(map[string]interface{}); ok {
+			exec.APIVersion = spec["api_version"].(string)
+			exec.Command = spec["command"].(string)
+			exec.Args = expandStringSlice(spec["args"].([]interface{}))
+			for kk, vv := range spec["env"].(map[string]interface{}) {
+				exec.Env = append(exec.Env, clientcmdapi.ExecEnvVar{Name: kk, Value: vv.(string)})
+			}
+		} else {
+			return fmt.Errorf("Failed to parse exec")
+		}
+		cfg.ExecProvider = exec
 	}
 
 	m.K8sConfig = cfg
@@ -595,6 +638,19 @@ func getContent(d *schema.ResourceData, key, def string) ([]byte, error) {
 	}
 
 	return []byte(content), nil
+}
+
+func expandStringSlice(s []interface{}) []string {
+	result := make([]string, len(s), len(s))
+	for k, v := range s {
+		// Handle the Terraform parser bug which turns empty strings in lists to nil.
+		if v == nil {
+			result[k] = ""
+		} else {
+			result[k] = v.(string)
+		}
+	}
+	return result
 }
 
 func debug(format string, a ...interface{}) {
